@@ -29,5 +29,11 @@ RUN npm ci --ignore-scripts --omit-dev
 # Install the package globally to make slack-mcp command available
 RUN npm install -g .
 
+# Expose the default port
+EXPOSE 8080
+
 # Use tini as PID 1 for proper signal handling
 ENTRYPOINT ["tini", "--", "slack-mcp"]
+
+# Default arguments (can be overridden)
+CMD []
