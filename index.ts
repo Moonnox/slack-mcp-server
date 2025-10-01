@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { z } from "zod";
-import express from "express";
-import { randomUUID } from "node:crypto";
+/**
+ * Remote MCP Server for Slack
+ * A remote MCP server that exposes Slack functionality via HTTP
+ */
+
+import express, { Request, Response, NextFunction } from "express";
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
@@ -50,24 +50,34 @@ interface GetUserProfileArgs {
   user_id: string;
 }
 
+// Configuration from environment variables
+const SECRET_KEY = process.env.SECRET_KEY || "";
+const PORT = parseInt(process.env.PORT || "8080", 10);
+const HOST = process.env.HOST || "0.0.0.0";
+const REQUIRE_AUTH = (process.env.REQUIRE_AUTH || "true").toLowerCase() === "true";
+
 export class SlackClient {
   private botHeaders: { Authorization: string; "Content-Type": string };
+  private teamId: string;
+  private channelIds?: string;
 
-  constructor(botToken: string) {
+  constructor(botToken: string, teamId: string, channelIds?: string) {
     this.botHeaders = {
       Authorization: `Bearer ${botToken}`,
       "Content-Type": "application/json",
     };
+    this.teamId = teamId;
+    this.channelIds = channelIds;
   }
 
   async getChannels(limit: number = 100, cursor?: string): Promise<any> {
-    const predefinedChannelIds = process.env.SLACK_CHANNEL_IDS;
+    const predefinedChannelIds = this.channelIds;
     if (!predefinedChannelIds) {
       const params = new URLSearchParams({
         types: "public_channel,private_channel",
         exclude_archived: "true",
         limit: Math.min(limit, 200).toString(),
-        team_id: process.env.SLACK_TEAM_ID!,
+        team_id: this.teamId,
       });
   
       if (cursor) {
@@ -191,7 +201,7 @@ export class SlackClient {
   async getUsers(limit: number = 100, cursor?: string): Promise<any> {
     const params = new URLSearchParams({
       limit: Math.min(limit, 200).toString(),
-      team_id: process.env.SLACK_TEAM_ID!,
+      team_id: this.teamId,
     });
 
     if (cursor) {
@@ -220,422 +230,453 @@ export class SlackClient {
   }
 }
 
-export function createSlackServer(slackClient: SlackClient): McpServer {
-  const server = new McpServer({
-    name: "Slack MCP Server",
-    version: "1.0.0",
-  });
-
-  // Register all Slack tools using the modern API
-  server.registerTool(
-    "slack_list_channels",
+// Define available tools
+function getToolsList() {
+  return [
     {
-      title: "List Slack Channels",
+      name: "slack_list_channels",
       description: "List public and private channels that the bot is a member of, or pre-defined channels in the workspace with pagination",
       inputSchema: {
-        limit: z.number().optional().default(100).describe("Maximum number of channels to return (default 100, max 200)"),
-        cursor: z.string().optional().describe("Pagination cursor for next page of results"),
-      },
+        type: "object",
+        properties: {
+          limit: {
+            type: "number",
+            description: "Maximum number of channels to return (default 100, max 200)",
+            default: 100
+          },
+          cursor: {
+            type: "string",
+            description: "Pagination cursor for next page of results"
+          }
+        }
+      }
     },
-    async ({ limit, cursor }) => {
-      const response = await slackClient.getChannels(limit, cursor);
-      return {
-        content: [{ type: "text", text: JSON.stringify(response) }],
-      };
-    }
-  );
-
-  server.registerTool(
-    "slack_post_message",
     {
-      title: "Post Slack Message",
+      name: "slack_post_message",
       description: "Post a new message to a Slack channel or direct message to user",
       inputSchema: {
-        channel_id: z.string().describe("The ID of the channel or user to post to"),
-        text: z.string().describe("The message text to post"),
-      },
+        type: "object",
+        properties: {
+          channel_id: {
+            type: "string",
+            description: "The ID of the channel or user to post to"
+          },
+          text: {
+            type: "string",
+            description: "The message text to post"
+          }
+        },
+        required: ["channel_id", "text"]
+      }
     },
-    async ({ channel_id, text }) => {
-      const response = await slackClient.postMessage(channel_id, text);
-      return {
-        content: [{ type: "text", text: JSON.stringify(response) }],
-      };
-    }
-  );
-
-  server.registerTool(
-    "slack_reply_to_thread",
     {
-      title: "Reply to Slack Thread",
+      name: "slack_reply_to_thread",
       description: "Reply to a specific message thread in Slack",
       inputSchema: {
-        channel_id: z.string().describe("The ID of the channel containing the thread"),
-        thread_ts: z.string().describe("The timestamp of the parent message in the format '1234567890.123456'. Timestamps in the format without the period can be converted by adding the period such that 6 numbers come after it."),
-        text: z.string().describe("The reply text"),
-      },
+        type: "object",
+        properties: {
+          channel_id: {
+            type: "string",
+            description: "The ID of the channel containing the thread"
+          },
+          thread_ts: {
+            type: "string",
+            description: "The timestamp of the parent message in the format '1234567890.123456'. Timestamps in the format without the period can be converted by adding the period such that 6 numbers come after it."
+          },
+          text: {
+            type: "string",
+            description: "The reply text"
+          }
+        },
+        required: ["channel_id", "thread_ts", "text"]
+      }
     },
-    async ({ channel_id, thread_ts, text }) => {
-      const response = await slackClient.postReply(channel_id, thread_ts, text);
-      return {
-        content: [{ type: "text", text: JSON.stringify(response) }],
-      };
-    }
-  );
-
-  server.registerTool(
-    "slack_add_reaction",
     {
-      title: "Add Slack Reaction",
+      name: "slack_add_reaction",
       description: "Add a reaction emoji to a message",
       inputSchema: {
-        channel_id: z.string().describe("The ID of the channel containing the message"),
-        timestamp: z.string().describe("The timestamp of the message to react to"),
-        reaction: z.string().describe("The name of the emoji reaction (without ::)"),
-      },
+        type: "object",
+        properties: {
+          channel_id: {
+            type: "string",
+            description: "The ID of the channel containing the message"
+          },
+          timestamp: {
+            type: "string",
+            description: "The timestamp of the message to react to"
+          },
+          reaction: {
+            type: "string",
+            description: "The name of the emoji reaction (without ::)"
+          }
+        },
+        required: ["channel_id", "timestamp", "reaction"]
+      }
     },
-    async ({ channel_id, timestamp, reaction }) => {
-      const response = await slackClient.addReaction(channel_id, timestamp, reaction);
-      return {
-        content: [{ type: "text", text: JSON.stringify(response) }],
-      };
-    }
-  );
-
-  server.registerTool(
-    "slack_get_channel_history",
     {
-      title: "Get Slack Channel History",
+      name: "slack_get_channel_history",
       description: "Get recent messages from a channel",
       inputSchema: {
-        channel_id: z.string().describe("The ID of the channel"),
-        limit: z.number().optional().default(10).describe("Number of messages to retrieve (default 10)"),
-      },
+        type: "object",
+        properties: {
+          channel_id: {
+            type: "string",
+            description: "The ID of the channel"
+          },
+          limit: {
+            type: "number",
+            description: "Number of messages to retrieve (default 10)",
+            default: 10
+          }
+        },
+        required: ["channel_id"]
+      }
     },
-    async ({ channel_id, limit }) => {
-      const response = await slackClient.getChannelHistory(channel_id, limit);
-      return {
-        content: [{ type: "text", text: JSON.stringify(response) }],
-      };
-    }
-  );
-
-  server.registerTool(
-    "slack_get_thread_replies",
     {
-      title: "Get Slack Thread Replies",
+      name: "slack_get_thread_replies",
       description: "Get all replies in a message thread",
       inputSchema: {
-        channel_id: z.string().describe("The ID of the channel containing the thread"),
-        thread_ts: z.string().describe("The timestamp of the parent message in the format '1234567890.123456'. Timestamps in the format without the period can be converted by adding the period such that 6 numbers come after it."),
-      },
+        type: "object",
+        properties: {
+          channel_id: {
+            type: "string",
+            description: "The ID of the channel containing the thread"
+          },
+          thread_ts: {
+            type: "string",
+            description: "The timestamp of the parent message in the format '1234567890.123456'. Timestamps in the format without the period can be converted by adding the period such that 6 numbers come after it."
+          }
+        },
+        required: ["channel_id", "thread_ts"]
+      }
     },
-    async ({ channel_id, thread_ts }) => {
-      const response = await slackClient.getThreadReplies(channel_id, thread_ts);
-      return {
-        content: [{ type: "text", text: JSON.stringify(response) }],
-      };
-    }
-  );
-
-  server.registerTool(
-    "slack_get_users",
     {
-      title: "Get Slack Users",
+      name: "slack_get_users",
       description: "Get a list of all users in the workspace with their basic profile information",
       inputSchema: {
-        cursor: z.string().optional().describe("Pagination cursor for next page of results"),
-        limit: z.number().optional().default(100).describe("Maximum number of users to return (default 100, max 200)"),
-      },
+        type: "object",
+        properties: {
+          cursor: {
+            type: "string",
+            description: "Pagination cursor for next page of results"
+          },
+          limit: {
+            type: "number",
+            description: "Maximum number of users to return (default 100, max 200)",
+            default: 100
+          }
+        }
+      }
     },
-    async ({ cursor, limit }) => {
-      const response = await slackClient.getUsers(limit, cursor);
-      return {
-        content: [{ type: "text", text: JSON.stringify(response) }],
-      };
-    }
-  );
-
-  server.registerTool(
-    "slack_get_user_profile",
     {
-      title: "Get Slack User Profile",
+      name: "slack_get_user_profile",
       description: "Get detailed profile information for a specific user",
       inputSchema: {
-        user_id: z.string().describe("The ID of the user"),
-      },
-    },
-    async ({ user_id }) => {
-      const response = await slackClient.getUserProfile(user_id);
-      return {
-        content: [{ type: "text", text: JSON.stringify(response) }],
-      };
+        type: "object",
+        properties: {
+          user_id: {
+            type: "string",
+            description: "The ID of the user"
+          }
+        },
+        required: ["user_id"]
+      }
     }
-  );
-
-  return server;
+  ];
 }
 
-async function runStdioServer(slackClient: SlackClient) {
-  console.error("Starting Slack MCP Server with stdio transport...");
-  const server = createSlackServer(slackClient);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Slack MCP Server running on stdio");
+// Handle tool execution
+async function handleToolCall(toolName: string, args: any, slackClient: SlackClient): Promise<any> {
+  try {
+    let response;
+
+    switch (toolName) {
+      case "slack_list_channels":
+        response = await slackClient.getChannels(args.limit, args.cursor);
+        break;
+      
+      case "slack_post_message":
+        response = await slackClient.postMessage(args.channel_id, args.text);
+        break;
+      
+      case "slack_reply_to_thread":
+        response = await slackClient.postReply(args.channel_id, args.thread_ts, args.text);
+        break;
+      
+      case "slack_add_reaction":
+        response = await slackClient.addReaction(args.channel_id, args.timestamp, args.reaction);
+        break;
+      
+      case "slack_get_channel_history":
+        response = await slackClient.getChannelHistory(args.channel_id, args.limit);
+        break;
+      
+      case "slack_get_thread_replies":
+        response = await slackClient.getThreadReplies(args.channel_id, args.thread_ts);
+        break;
+      
+      case "slack_get_users":
+        response = await slackClient.getUsers(args.limit, args.cursor);
+        break;
+      
+      case "slack_get_user_profile":
+        response = await slackClient.getUserProfile(args.user_id);
+        break;
+      
+      default:
+        throw new Error(`Unknown tool: ${toolName}`);
+    }
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(response, null, 2)
+        }
+      ]
+    };
+  } catch (error: any) {
+    console.error(`Error executing tool ${toolName}:`, error);
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            error: error.message || String(error),
+            status: "failed"
+          }, null, 2)
+        }
+      ]
+    };
+  }
 }
 
-async function runHttpServer(slackClient: SlackClient, port: number = 3000, authToken?: string) {
-  console.error(`Starting Slack MCP Server with Streamable HTTP transport on port ${port}...`);
-  
+// Authentication middleware
+function authMiddleware(req: Request, res: Response, next: NextFunction) {
+  // Skip auth if not required
+  if (!REQUIRE_AUTH) {
+    return next();
+  }
+
+  // Skip auth if SECRET_KEY is not configured
+  if (!SECRET_KEY) {
+    console.warn("SECRET_KEY not configured but REQUIRE_AUTH is true");
+    return next();
+  }
+
+  // Only check auth for /mcp endpoint with POST method
+  if (req.path === "/mcp" && req.method === "POST") {
+    try {
+      const method = req.body?.method;
+
+      // Only require auth for tools/call
+      if (method === "tools/call") {
+        const providedKey = req.headers["x-secret-key"] as string | undefined;
+
+        if (!providedKey) {
+          const clientHost = req.ip || "unknown";
+          console.warn(`Missing x-secret-key header from ${clientHost} for tools/call`);
+          return res.status(401).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32001,
+              message: "Authentication required for tool execution"
+            },
+            id: req.body?.id || null
+          });
+        }
+
+        if (providedKey !== SECRET_KEY) {
+          const clientHost = req.ip || "unknown";
+          console.warn(`Invalid x-secret-key from ${clientHost} for tools/call`);
+          return res.status(401).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32001,
+              message: "Invalid authentication for tool execution"
+            },
+            id: req.body?.id || null
+          });
+        }
+      }
+      // For discovery methods (initialize, tools/list), allow without auth
+      else if (method === "initialize" || method === "tools/list") {
+        console.log(`Allowing unauthenticated ${method} request`);
+      }
+    } catch (error) {
+      console.error("Error in auth middleware:", error);
+      // On error, let the request through to be handled properly
+    }
+  }
+
+  next();
+}
+
+// Main HTTP server
+function createHttpServer() {
   const app = express();
   app.use(express.json());
+  app.use(authMiddleware);
 
-  // Authorization middleware
-  const authMiddleware = (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    if (!authToken) {
-      // No auth token configured, skip authorization
-      return next();
-    }
-
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return res.status(401).json({
-        jsonrpc: '2.0',
-        error: {
-          code: -32000,
-          message: 'Unauthorized: Missing or invalid Authorization header',
-        },
-        id: null,
-      });
-    }
-
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-    if (token !== authToken) {
-      return res.status(401).json({
-        jsonrpc: '2.0',
-        error: {
-          code: -32000,
-          message: 'Unauthorized: Invalid token',
-        },
-        id: null,
-      });
-    }
-
-    next();
-  };
-
-  // Map to store transports by session ID
-  const transports: { [sessionId: string]: StreamableHTTPServerTransport } = {};
-
-  // Handle POST requests for client-to-server communication
-  app.post('/mcp', authMiddleware, async (req, res) => {
-    try {
-      // Check for existing session ID
-      const sessionId = req.headers['mcp-session-id'] as string | undefined;
-      let transport: StreamableHTTPServerTransport;
-
-      if (sessionId && transports[sessionId]) {
-        // Reuse existing transport
-        transport = transports[sessionId];
-      } else if (!sessionId && req.body?.method === 'initialize') {
-        // New initialization request
-        transport = new StreamableHTTPServerTransport({
-          sessionIdGenerator: () => randomUUID(),
-          onsessioninitialized: (sessionId) => {
-            // Store the transport by session ID
-            transports[sessionId] = transport;
-          },
-        });
-
-        // Clean up transport when closed
-        transport.onclose = () => {
-          if (transport.sessionId) {
-            delete transports[transport.sessionId];
-          }
-        };
-
-        const server = createSlackServer(slackClient);
-        // Connect to the MCP server
-        await server.connect(transport);
-      } else {
-        // Invalid request
-        res.status(400).json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32000,
-            message: 'Bad Request: No valid session ID provided',
-          },
-          id: null,
-        });
-        return;
-      }
-
-      // Handle the request
-      await transport.handleRequest(req, res, req.body);
-    } catch (error) {
-      console.error('Error handling MCP request:', error);
-      if (!res.headersSent) {
-        res.status(500).json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32603,
-            message: 'Internal server error',
-          },
-          id: null,
-        });
-      }
-    }
-  });
-
-  // Reusable handler for GET and DELETE requests
-  const handleSessionRequest = async (req: express.Request, res: express.Response) => {
-    const sessionId = req.headers['mcp-session-id'] as string | undefined;
-    if (!sessionId || !transports[sessionId]) {
-      res.status(400).send('Invalid or missing session ID');
-      return;
-    }
-    
-    const transport = transports[sessionId];
-    await transport.handleRequest(req, res);
-  };
-
-  // Handle GET requests for server-to-client notifications via Streamable HTTP
-  app.get('/mcp', authMiddleware, handleSessionRequest);
-
-  // Handle DELETE requests for session termination
-  app.delete('/mcp', authMiddleware, handleSessionRequest);
-
-  // Health endpoint - no authentication required
-  app.get('/health', (req, res) => {
-    res.status(200).json({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      service: 'Slack MCP Server',
-      version: '1.0.0'
+  // Health check endpoint
+  app.get("/health", (req: Request, res: Response) => {
+    res.json({
+      status: "healthy",
+      service: "mcp-slack-server"
     });
   });
 
-  const server = app.listen(port, '0.0.0.0', () => {
-    console.error(`Slack MCP Server running on http://0.0.0.0:${port}/mcp`);
+  // Root endpoint with server information
+  app.get("/", (req: Request, res: Response) => {
+    res.json({
+      service: "MCP Slack Server",
+      version: "1.0.0",
+      description: "Model Context Protocol server for Slack integration",
+      endpoints: {
+        "/health": "Health check endpoint",
+        "/mcp": "MCP JSON-RPC endpoint",
+        "/tools": "List available tools"
+      }
+    });
   });
 
-  return server;
-}
+  // List tools endpoint
+  app.get("/tools", (req: Request, res: Response) => {
+    res.json({
+      tools: getToolsList()
+    });
+  });
 
-export function parseArgs() {
-  const args = process.argv.slice(2);
-  let transport = 'stdio'; // default
-  let port = 3000;
-  let authToken: string | undefined;
+  // Main MCP endpoint
+  app.post("/mcp", async (req: Request, res: Response) => {
+    try {
+      const body = req.body;
+      console.log("Received MCP request:", JSON.stringify(body, null, 2));
 
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--transport' && i + 1 < args.length) {
-      transport = args[i + 1];
-      i++; // skip next argument
-    } else if (args[i] === '--port' && i + 1 < args.length) {
-      port = parseInt(args[i + 1], 10);
-      i++; // skip next argument
-    } else if (args[i] === '--token' && i + 1 < args.length) {
-      authToken = args[i + 1];
-      i++; // skip next argument
-    } else if (args[i] === '--help' || args[i] === '-h') {
-      console.log(`
-Usage: node index.js [options]
+      const method = body.method;
+      const params = body.params || {};
+      const requestId = body.id;
 
-Options:
-  --transport <type>     Transport type: 'stdio' or 'http' (default: stdio)
-  --port <number>        Port for HTTP server when using Streamable HTTP transport (default: 3000)
-  --token <token>   Bearer token for HTTP authorization (optional, can also use AUTH_TOKEN env var)
-  --help, -h             Show this help message
+      // Extract Slack credentials from headers
+      const slackBotToken = req.headers["x-slack-bot-token"] as string | undefined;
+      const slackTeamId = req.headers["x-slack-team-id"] as string | undefined;
+      const slackChannelIds = req.headers["x-slack-channel-ids"] as string | undefined;
 
-Environment Variables:
-  AUTH_TOKEN             Bearer token for HTTP authorization (fallback if --token not provided)
+      // Route to appropriate handler based on method
+      if (method === "initialize") {
+        const result = {
+          protocolVersion: "2024-11-05",
+          capabilities: {
+            tools: {},
+            prompts: null,
+            resources: null
+          },
+          serverInfo: {
+            name: "slack-mcp-server",
+            version: "1.0.0"
+          }
+        };
 
-Examples:
-  node index.js                                    # Use stdio transport (default)
-  node index.js --transport stdio                  # Use stdio transport explicitly
-  node index.js --transport http                   # Use Streamable HTTP transport on port 3000
-  node index.js --transport http --port 8080       # Use Streamable HTTP transport on port 8080
-  node index.js --transport http --token mytoken   # Use Streamable HTTP transport with custom auth token
-  AUTH_TOKEN=mytoken node index.js --transport http   # Use Streamable HTTP transport with auth token from env var
-`);
-      process.exit(0);
+        return res.json({
+          jsonrpc: "2.0",
+          result,
+          id: requestId
+        });
+      } else if (method === "tools/list") {
+        const result = {
+          tools: getToolsList()
+        };
+
+        return res.json({
+          jsonrpc: "2.0",
+          result,
+          id: requestId
+        });
+      } else if (method === "tools/call") {
+        // Validate Slack credentials for tool execution
+        if (!slackBotToken || !slackTeamId) {
+          return res.json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32602,
+              message: "Missing required Slack credentials in headers: x-slack-bot-token and x-slack-team-id are required"
+            },
+            id: requestId
+          });
+        }
+
+        // Create Slack client with credentials from headers
+        const slackClient = new SlackClient(slackBotToken, slackTeamId, slackChannelIds);
+
+        const toolName = params.name;
+        const toolArguments = params.arguments || {};
+
+        const result = await handleToolCall(toolName, toolArguments, slackClient);
+
+        return res.json({
+          jsonrpc: "2.0",
+          result,
+          id: requestId
+        });
+      } else {
+        // Method not found
+        return res.json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32601,
+            message: `Method not found: ${method}`
+          },
+          id: requestId
+        });
+      }
+    } catch (error: any) {
+      console.error("Error handling MCP request:", error);
+      return res.json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32603,
+          message: `Internal error: ${error.message || String(error)}`
+        },
+        id: req.body?.id || null
+      });
     }
-  }
+  });
 
-  if (transport !== 'stdio' && transport !== 'http') {
-    console.error('Error: --transport must be either "stdio" or "http"');
-    process.exit(1);
-  }
-
-  if (isNaN(port) || port < 1 || port > 65535) {
-    console.error('Error: --port must be a valid port number (1-65535)');
-    process.exit(1);
-  }
-
-  return { transport, port, authToken };
+  return app;
 }
 
 export async function main() {
-  const { transport, port, authToken } = parseArgs();
+  console.log(`Starting MCP Slack Server on ${HOST}:${PORT}`);
+  console.log(`Authentication enabled: ${REQUIRE_AUTH}`);
+  console.log(`Secret Key configured: ${SECRET_KEY ? 'Yes' : 'No'}`);
+
+  const app = createHttpServer();
   
-  const botToken = process.env.SLACK_BOT_TOKEN;
-  const teamId = process.env.SLACK_TEAM_ID;
-
-  if (!botToken || !teamId) {
-    console.error(
-      "Please set SLACK_BOT_TOKEN and SLACK_TEAM_ID environment variables",
-    );
-    process.exit(1);
-  }
-
-  const slackClient = new SlackClient(botToken);
-  let httpServer: any = null;
+  const httpServer = app.listen(PORT, HOST, () => {
+    console.log(`MCP Slack Server running on http://${HOST}:${PORT}`);
+    console.log(`Health check available at http://${HOST}:${PORT}/health`);
+    console.log(`MCP endpoint at http://${HOST}:${PORT}/mcp`);
+  });
 
   // Setup graceful shutdown handlers
-  const setupGracefulShutdown = () => {
-    const shutdown = (signal: string) => {
-      console.error(`\nReceived ${signal}. Shutting down gracefully...`);
-      
-      if (httpServer) {
-        httpServer.close(() => {
-          console.error('HTTP server closed.');
-          process.exit(0);
-        });
-        
-        // Force close after 5 seconds
-        setTimeout(() => {
-          console.error('Forcing shutdown...');
-          process.exit(1);
-        }, 5000);
-      } else {
-        process.exit(0);
-      }
-    };
-
-    process.on('SIGINT', () => shutdown('SIGINT'));
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGQUIT', () => shutdown('SIGQUIT'));
+  const shutdown = (signal: string) => {
+    console.log(`\nReceived ${signal}. Shutting down gracefully...`);
+    
+    httpServer.close(() => {
+      console.log('HTTP server closed.');
+      process.exit(0);
+    });
+    
+    // Force close after 5 seconds
+    setTimeout(() => {
+      console.error('Forcing shutdown...');
+      process.exit(1);
+    }, 5000);
   };
 
-  setupGracefulShutdown();
-
-  if (transport === 'stdio') {
-    await runStdioServer(slackClient);
-  } else if (transport === 'http') {
-    // Use auth token from command line, environment variable, or generate random
-    let finalAuthToken = authToken || process.env.AUTH_TOKEN;
-    if (!finalAuthToken) {
-      finalAuthToken = randomUUID();
-      console.error(`Generated auth token: ${finalAuthToken}`);
-      console.error('Use this token in the Authorization header: Bearer ' + finalAuthToken);
-    } else if (authToken) {
-      console.error('Using provided auth token for authorization');
-    } else {
-      console.error('Using auth token from AUTH_TOKEN environment variable');
-    }
-    
-    httpServer = await runHttpServer(slackClient, port, finalAuthToken);
-  }
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGQUIT', () => shutdown('SIGQUIT'));
 }
 
 // Only run main() if this file is executed directly, not when imported by tests
