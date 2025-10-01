@@ -140,3 +140,5 @@ slack-config.json
 
 # MCP specific
 mcp-config.json
+.cursorindexingignore
+/.specstory

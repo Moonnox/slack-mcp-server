@@ -1,0 +1,54 @@
+# Google Cloud Build configuration for Slack MCP Server
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/slack-mcp-server:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/slack-mcp-server:latest'
+      - '.'
+    id: 'build-image'
+
+  # Push the Docker image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/slack-mcp-server:$COMMIT_SHA'
+    id: 'push-image-sha'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/slack-mcp-server:latest'
+    id: 'push-image-latest'
+
+  # Deploy to Cloud Run (optional - uncomment to enable automatic deployment)
+  # - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  #   entrypoint: gcloud
+  #   args:
+  #     - 'run'
+  #     - 'deploy'
+  #     - 'slack-mcp-server'
+  #     - '--image=gcr.io/$PROJECT_ID/slack-mcp-server:$COMMIT_SHA'
+  #     - '--region=us-central1'
+  #     - '--platform=managed'
+  #     - '--allow-unauthenticated'
+  #     - '--set-env-vars=REQUIRE_AUTH=true'
+  #     - '--set-secrets=SECRET_KEY=slack-mcp-secret-key:latest'
+  #   id: 'deploy-cloud-run'
+
+# Images to be pushed to Container Registry
+images:
+  - 'gcr.io/$PROJECT_ID/slack-mcp-server:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/slack-mcp-server:latest'
+
+# Build timeout (default is 10 minutes)
+timeout: '600s'
+
+# Build options
+options:
+  machineType: 'N1_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+

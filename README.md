@@ -207,7 +207,51 @@ When `REQUIRE_AUTH=true` and `SECRET_KEY` is set:
 
 ## Deployment
 
+### Local Docker
+
+```bash
+# Build (standard Docker - works everywhere)
+docker build -t slack-mcp-server .
+
+# Or build with BuildKit for faster builds (optional)
+DOCKER_BUILDKIT=1 docker build -f Dockerfile.buildkit -t slack-mcp-server .
+
+# Run
+docker run -p 8080:8080 \
+  -e SECRET_KEY=your-secret-key \
+  -e REQUIRE_AUTH=true \
+  slack-mcp-server
+```
+
 ### Cloud Run (Google Cloud)
+
+#### Option 1: Using Cloud Build (Recommended)
+
+```bash
+# Set your project ID
+export PROJECT_ID=your-project-id
+gcloud config set project $PROJECT_ID
+
+# Enable required APIs
+gcloud services enable cloudbuild.googleapis.com run.googleapis.com
+
+# Build using cloudbuild.yaml (this will build and push to GCR)
+gcloud builds submit --config cloudbuild.yaml
+
+# Create a secret for SECRET_KEY (first time only)
+echo -n "your-secret-key-here" | gcloud secrets create slack-mcp-secret-key --data-file=-
+
+# Deploy to Cloud Run
+gcloud run deploy slack-mcp-server \
+  --image gcr.io/$PROJECT_ID/slack-mcp-server:latest \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars REQUIRE_AUTH=true \
+  --set-secrets SECRET_KEY=slack-mcp-secret-key:latest
+```
+
+#### Option 2: Direct Build and Deploy
 
 ```bash
 # Build and push to Container Registry
@@ -221,6 +265,8 @@ gcloud run deploy slack-mcp-server \
   --allow-unauthenticated \
   --set-env-vars SECRET_KEY=your-secret-key,REQUIRE_AUTH=true
 ```
+
+**Note**: The standard `Dockerfile` is compatible with Google Cloud Build. The `Dockerfile.buildkit` is only for local development with BuildKit enabled.
 
 ### Kubernetes
 

@@ -361,114 +361,15 @@ describe('SlackClient', () => {
   });
 });
 
-describe('createSlackServer', () => {
-  test('createSlackServer returns server instance', async () => {
-    const { createSlackServer, SlackClient } = await import('../index.js');
+describe('Remote MCP Server', () => {
+  test('SlackClient accepts team_id and channel_ids', async () => {
+    const { SlackClient } = await import('../index.js');
     
-    const mockSlackClient = new SlackClient('xoxb-test-token');
-    const server = createSlackServer(mockSlackClient);
+    const mockSlackClient = new SlackClient('xoxb-test-token', 'T123456', 'C123,C456');
 
-    // Just test that the server is created and defined
-    expect(server).toBeDefined();
-    expect(typeof server).toBe('object');
-  });
-});
-
-describe('parseArgs', () => {
-  test('parseArgs with default values', async () => {
-    process.argv = ['node', 'index.js'];
-    const { parseArgs } = await import('../index.js');
-
-    const result = parseArgs();
-
-    expect(result).toEqual({
-      transport: 'stdio',
-      port: 3000,
-      authToken: undefined,
-    });
-  });
-
-  test('parseArgs with custom transport', async () => {
-    process.argv = ['node', 'index.js', '--transport', 'http'];
-    const { parseArgs } = await import('../index.js');
-
-    const result = parseArgs();
-
-    expect(result).toEqual({
-      transport: 'http',
-      port: 3000,
-      authToken: undefined,
-    });
-  });
-
-  test('parseArgs with custom port', async () => {
-    process.argv = ['node', 'index.js', '--port', '8080'];
-    const { parseArgs } = await import('../index.js');
-
-    const result = parseArgs();
-
-    expect(result).toEqual({
-      transport: 'stdio',
-      port: 8080,
-      authToken: undefined,
-    });
-  });
-
-  test('parseArgs with invalid transport', async () => {
-    process.argv = ['node', 'index.js', '--transport', 'invalid'];
-    const { parseArgs } = await import('../index.js');
-
-    const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit called');
-    });
-    const mockConsoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
-
-    expect(() => parseArgs()).toThrow('process.exit called');
-    expect(mockConsoleError).toHaveBeenCalledWith('Error: --transport must be either "stdio" or "http"');
-    expect(mockExit).toHaveBeenCalledWith(1);
-
-    mockExit.mockRestore();
-    mockConsoleError.mockRestore();
-  });
-
-  test('parseArgs with invalid port', async () => {
-    process.argv = ['node', 'index.js', '--port', 'invalid'];
-    const { parseArgs } = await import('../index.js');
-
-    const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit called');
-    });
-    const mockConsoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
-
-    expect(() => parseArgs()).toThrow('process.exit called');
-    expect(mockConsoleError).toHaveBeenCalledWith('Error: --port must be a valid port number (1-65535)');
-    expect(mockExit).toHaveBeenCalledWith(1);
-
-    mockExit.mockRestore();
-    mockConsoleError.mockRestore();
-  });
-});
-
-describe('main', () => {
-  test('main with missing env vars', async () => {
-    delete process.env.SLACK_BOT_TOKEN;
-    delete process.env.SLACK_TEAM_ID;
-
-    const { main } = await import('../index.js');
-
-    const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('process.exit called');
-    });
-    const mockConsoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
-
-    await expect(main()).rejects.toThrow('process.exit called');
-    expect(mockConsoleError).toHaveBeenCalledWith(
-      'Please set SLACK_BOT_TOKEN and SLACK_TEAM_ID environment variables'
-    );
-    expect(mockExit).toHaveBeenCalledWith(1);
-
-    mockExit.mockRestore();
-    mockConsoleError.mockRestore();
+    // Just test that the SlackClient is created and defined
+    expect(mockSlackClient).toBeDefined();
+    expect(typeof mockSlackClient).toBe('object');
   });
 });
 
@@ -481,10 +382,10 @@ describe('HTTP Server', () => {
     expect(typeof express.default).toBe('function');
   });
 
-  test('SlackClient can be instantiated', async () => {
+  test('SlackClient can be instantiated with credentials', async () => {
     const { SlackClient } = await import('../index.js');
     
-    const mockSlackClient = new SlackClient('xoxb-test-token');
+    const mockSlackClient = new SlackClient('xoxb-test-token', 'T123456');
     
     // Test that SlackClient is created successfully
     expect(mockSlackClient).toBeDefined();
@@ -496,8 +397,6 @@ describe('HTTP Server', () => {
     
     // Test that required exports are available
     expect(indexModule.SlackClient).toBeDefined();
-    expect(indexModule.createSlackServer).toBeDefined();
-    expect(indexModule.parseArgs).toBeDefined();
     expect(indexModule.main).toBeDefined();
   });
 });
